@@ -1,105 +1,118 @@
 # LakeSail POC Setup
 
-This project no longer keeps environment-specific values in source.
-To run it successfully, you must provide your own bucket name and AWS
-credentials path at runtime.
+This repo is set up so machine-specific values are not committed in source.
+A new user only needs to do three things:
 
-## What Is Required
+1. Set up Minikube, Docker, and Argo.
+2. Set up AWS credentials and an S3 bucket.
+3. Run the POC.
 
-The following values are required or expected:
+## 1. Minikube, Docker, and Argo
 
-- `S3_BUCKET` is required. Set it to an existing S3 bucket you control.
-- `AWS_SHARED_CREDENTIALS_FILE` is optional if your credentials are stored at
-  `${HOME}/lakesail-credentials`. Set it if your credentials file lives
-  somewhere else.
-- `AWS_PROFILE` defaults to `lakesail`.
-- `AWS_REGION` defaults to `us-east-1`.
+The cluster bootstrap script is [lakesail_poc_cluster.sh](/home/zeo/Desktop/lakesail/lakesail_poc_cluster.sh).
 
-## Quick Setup
+What you need first:
 
-1. Create or export an AWS credentials file.
+- Docker installed and running
+- permission to run `docker info`
+- `sudo` access if the script needs to install `minikube`, `kubectl`, or `argo`
+
+Run:
 
 ```bash
-SOURCE_AWS_PROFILE="default"
-CREDENTIALS_FILE="${HOME}/lakesail-credentials"
-TEMP_CREDENTIALS="$(mktemp)"
-
-aws configure export-credentials \
-  --profile "$SOURCE_AWS_PROFILE" \
-  --format process |
-jq -r '
-  "[lakesail]",
-  "aws_access_key_id = \(.AccessKeyId)",
-  "aws_secret_access_key = \(.SecretAccessKey)",
-  "aws_session_token = \(.SessionToken)"
-' > "$TEMP_CREDENTIALS"
-
-install -m 600 "$TEMP_CREDENTIALS" "$CREDENTIALS_FILE"
-rm -f "$TEMP_CREDENTIALS"
+./lakesail_poc_cluster.sh setup
 ```
 
-2. Export the runtime variables.
+What this does:
+
+- installs `minikube`, `kubectl`, and `argo` if they are missing
+- creates the `lakesail-poc` Minikube cluster
+- installs Argo Workflows into the `argo` namespace
+
+Useful checks:
+
+```bash
+./lakesail_poc_cluster.sh status
+docker info
+minikube status --profile lakesail-poc
+kubectl get pods -n argo
+```
+
+If setup succeeds, you can open the Argo UI with:
+
+```bash
+kubectl -n argo port-forward service/argo-server 2746:2746
+```
+
+Then open `https://localhost:2746`.
+
+## 2. AWS Setup
+
+You need:
+
+- an AWS CLI profile that already works on your machine, usually `default`
+- an existing S3 bucket that you control
+- permission to access Glue and S3
+
+Create the LakeSail credentials file:
+
+```bash
+SOURCE_AWS_PROFILE=default ./run_lakesail_distributed_poc.sh setup-credentials
+```
+
+This calls [setup_lakesail_credentials.sh](/home/zeo/Desktop/lakesail/setup_lakesail_credentials.sh) and writes a LakeSail-format credentials file to `${HOME}/lakesail-credentials` by default.
+
+Create or edit [env.local.sh](/home/zeo/Desktop/lakesail/env.local.sh):
 
 ```bash
 export S3_BUCKET="your-existing-bucket"
-export AWS_SHARED_CREDENTIALS_FILE="${HOME}/lakesail-credentials"
+export AWS_CREDENTIALS_FILE="${HOME}/lakesail-credentials"
 export AWS_PROFILE="lakesail"
 export AWS_REGION="us-east-1"
 ```
 
-3. Optionally source the example env file and edit it first.
+`run_lakesail_distributed_poc.sh` automatically loads `env.local.sh` if it exists.
+
+Optional Glue check:
 
 ```bash
-cp env.example.sh env.local.sh
-# edit env.local.sh with your bucket and credentials path
-source env.local.sh
+./setup.sh
 ```
 
-## Local Script
+## 3. Run the POC
 
-`src/basic_test.py` expects `S3_BUCKET` to already be exported. It uses
-`${HOME}/lakesail-credentials` by default unless you override
-`AWS_SHARED_CREDENTIALS_FILE`.
+Run the distributed POC:
 
-Example:
+```bash
+./run_lakesail_distributed_poc.sh run
+```
+
+Useful follow-up commands:
+
+```bash
+./run_lakesail_distributed_poc.sh status
+./run_lakesail_distributed_poc.sh logs
+./run_lakesail_distributed_poc.sh cleanup
+```
+
+## How The Runner Works
+
+- The Docker image contains Python, `pysail`, and the dependencies from [requirements.txt](/home/zeo/Desktop/lakesail/requirements.txt).
+- [lakesail_distributed_test.py](/home/zeo/Desktop/lakesail/lakesail_distributed_test.py) is not baked into the image for each run.
+- The runner uploads that Python file into Kubernetes as a `ConfigMap` and mounts it into the Argo pod at `/opt/lakesail-poc/lakesail_distributed_test.py`.
+- AWS credentials are uploaded as a Kubernetes `Secret` and mounted at `/var/run/lakesail/aws/credentials`.
+
+## What Is Required
+
+- `S3_BUCKET` must be set in your environment or in `env.local.sh`.
+- `${HOME}/lakesail-credentials` must exist, or `AWS_CREDENTIALS_FILE` must point to another valid credentials file.
+- Docker, Minikube, `kubectl`, and Argo must be available for the distributed run.
+
+## Local Test
+
+If you want to run the local Python script instead of the distributed Argo flow:
 
 ```bash
 export S3_BUCKET="your-existing-bucket"
 python3 src/basic_test.py
 ```
-
-## Distributed Script
-
-`run_lakesail_distributed_poc.sh` now fails early if `S3_BUCKET` is missing.
-That is intentional so the script does not silently run against a hardcoded
-bucket.
-
-Example:
-
-```bash
-export S3_BUCKET="your-existing-bucket"
-./run_lakesail_distributed_poc.sh run
-```
-
-You can also pass values inline:
-
-```bash
-S3_BUCKET="your-existing-bucket" \
-AWS_CREDENTIALS_FILE="${HOME}/lakesail-credentials" \
-./run_lakesail_distributed_poc.sh run
-```
-
-## Glue Database Check
-
-`setup.sh` also expects `S3_BUCKET` to be set before running:
-
-```bash
-export S3_BUCKET="your-existing-bucket"
-./setup.sh
-```
-
-## Why This Changed
-
-The bucket name and the old `/home/zeo/...` paths were machine-specific.
-Keeping them out of source makes the repo portable and avoids accidentally
-shipping personal or environment-bound values.

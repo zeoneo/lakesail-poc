@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ENV_LOCAL_FILE="${SCRIPT_DIR}/env.local.sh"
+SETUP_CREDENTIALS_SCRIPT="${SCRIPT_DIR}/setup_lakesail_credentials.sh"
 PYTHON_FILE="${PYTHON_FILE:-${SCRIPT_DIR}/lakesail_distributed_test.py}"
 REQUIREMENTS_FILE="${SCRIPT_DIR}/requirements.txt"
 
@@ -21,6 +22,7 @@ CONFIG_MAP_NAME="${CONFIG_MAP_NAME:-lakesail-distributed-test}"
 AWS_SECRET_NAME="${AWS_SECRET_NAME:-lakesail-aws-credentials}"
 
 AWS_CREDENTIALS_FILE="${AWS_CREDENTIALS_FILE:-${HOME}/lakesail-credentials}"
+SOURCE_AWS_PROFILE="${SOURCE_AWS_PROFILE:-default}"
 AWS_PROFILE="${AWS_PROFILE:-lakesail}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 S3_BUCKET="${S3_BUCKET:-}"
@@ -56,6 +58,7 @@ usage() {
     "Usage: $0 run|status|logs|cleanup" \
     "" \
     "Commands:" \
+    "  setup-credentials  Export AWS credentials into the LakeSail profile file" \
     "  run      Prepare all resources, submit the POC, wait and print logs" \
     "  status   Show the workflow, driver pod and LakeSail worker pods" \
     "  logs     Print logs from the current workflow" \
@@ -68,6 +71,7 @@ usage() {
     "  S3_BUCKET=your-bucket-name $0 run" \
     "  AWS_CREDENTIALS_FILE=/path/to/credentials $0 run" \
     "  or create ${ENV_LOCAL_FILE} and rerun" \
+    "  SOURCE_AWS_PROFILE=default $0 setup-credentials" \
     "" \
     "The image is built from requirements.txt beside this script." \
     "Its dependency checksum is used to detect when a rebuild is required."
@@ -80,6 +84,13 @@ require_command() {
 validate_positive_integer() {
   local name="$1" value="$2"
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "$name must be a positive integer"
+}
+
+setup_credentials() {
+  [[ -f "$SETUP_CREDENTIALS_SCRIPT" ]] || \
+    die "Credentials setup script not found: $SETUP_CREDENTIALS_SCRIPT"
+  log "Running credentials setup via ${SETUP_CREDENTIALS_SCRIPT}"
+  "$SETUP_CREDENTIALS_SCRIPT"
 }
 
 validate_configuration() {
@@ -795,6 +806,9 @@ cleanup_poc() {
 
 main() {
   case "${1:-run}" in
+    setup-credentials)
+      setup_credentials
+      ;;
     run) run_cycle ;;
     status)
       require_command minikube
