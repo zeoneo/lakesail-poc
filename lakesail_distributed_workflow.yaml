@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesail-runner
+  namespace: argo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lakesail-runner
+  namespace: argo
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "patch", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lakesail-runner
+  namespace: argo
+subjects:
+  - kind: ServiceAccount
+    name: lakesail-runner
+    namespace: argo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lakesail-runner
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: lakesail-distributed-poc
+  namespace: argo
+spec:
+  serviceAccountName: lakesail-runner
+  entrypoint: distributed-test
+  activeDeadlineSeconds: 1800
+  ttlStrategy:
+    secondsAfterCompletion: 3600
+  arguments:
+    parameters:
+      - name: row-count
+        value: "100000"
+      - name: partitions
+        value: "4"
+  templates:
+    - name: distributed-test
+      container:
+        image: lakesail-poc:pysail-0.6.6-rustls-aws-lc-v4
+        imagePullPolicy: IfNotPresent
+        command: ["python3"]
+        args: ["/opt/lakesail-poc/lakesail_distributed_test.py"]
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: SAIL_IMAGE
+            value: lakesail-poc:pysail-0.6.6-rustls-aws-lc-v4
+          - name: SAIL_SERVICE_ACCOUNT
+            value: lakesail-runner
+          - name: AWS_CREDENTIALS_SECRET
+            value: lakesail-aws-credentials
+          - name: AWS_SHARED_CREDENTIALS_FILE
+            value: /var/run/lakesail/aws/credentials
+          - name: POC_ROW_COUNT
+            value: "{{workflow.parameters.row-count}}"
+          - name: POC_PARTITIONS
+            value: "{{workflow.parameters.partitions}}"
+          - name: SAIL_WORKER_INITIAL_COUNT
+            value: "4"
+          - name: SAIL_WORKER_MAX_COUNT
+            value: "4"
+          - name: SAIL_WORKER_TASK_SLOTS
+            value: "1"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 3Gi
+        volumeMounts:
+          - name: test-script
+            mountPath: /opt/lakesail-poc
+            readOnly: true
+          - name: aws-credentials
+            mountPath: /var/run/lakesail/aws
+            readOnly: true
+      volumes:
+        - name: test-script
+          configMap:
+            name: lakesail-distributed-test
+        - name: aws-credentials
+          secret:
+            secretName: lakesail-aws-credentials

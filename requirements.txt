@@ -1,0 +1,13 @@
+# LakeSail distributed POC client runtime (Python 3.11).
+# PySail itself is compiled from source in the Docker builder so that the
+# Rustls AWS-LC provider can be explicitly selected at native-module startup.
+pyspark==3.5.9
+
+# Spark Connect imports these dependencies at session creation time.
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==20.0.0
+grpcio==1.71.0
+grpcio-status==1.71.0
+googleapis-common-protos==1.69.2
+protobuf==5.29.5
