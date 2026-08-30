@@ -282,17 +282,19 @@ def log_catalog_io_location(
 
 
 def verify_catalog_resolution(spark: SparkSession) -> None:
-    """Resolve both tables using only database.table identifiers."""
+    """Use db.table only to resolve each storage location from Glue."""
 
     for table_name in (EVENTS_TABLE, SUMMARY_TABLE):
-        log(f"Resolving {table_name} through the Glue catalog")
-        spark.sql(f"SELECT * FROM {table_name} LIMIT 0").collect()
-        log_catalog_io_location(spark, "METADATA", table_name)
-        log(f"Catalog resolution succeeded: {table_name}")
+        resolved_location = get_catalog_resolved_location(spark, table_name)
+        log(
+            f"Glue metadata resolution succeeded: table={table_name}, "
+            f"location={resolved_location}"
+        )
 
     log(
-        "All remaining reads and writes use database.table names only; "
-        "LakeSail must obtain the underlying S3 locations from Glue"
+        "The transformation source read will use the resolved S3 location "
+        "directly; its db.table identifier will not be passed to "
+        "DataFrameReader or transformation SQL"
     )
 
 
@@ -335,12 +337,43 @@ def transform_batch_with_sql(
     spark: SparkSession,
     batch_id: str,
 ):
-    """Return a SQL-transformed DataFrame and validate its Python schema."""
+    """Read Delta by resolved path, transform with SQL, and inspect schemas."""
 
-    log_catalog_io_location(spark, "READ", EVENTS_TABLE)
+    resolved_location = get_catalog_resolved_location(spark, EVENTS_TABLE)
     log(
-        f"Running spark.sql transformation against catalog table "
-        f"{EVENTS_TABLE}"
+        f"Reading Delta source directly from Glue-resolved S3 location: "
+        f"{resolved_location}"
+    )
+    source = spark.read.format("delta").load(resolved_location)
+
+    source_schema_fields = source.schema.fields
+    log(
+        "Python reached direct-path source.schema.fields: "
+        + ", ".join(
+            f"{field.name}:{field.dataType.simpleString()}"
+            for field in source_schema_fields
+        )
+    )
+    required_source_fields = {
+        "batch_id",
+        "event_id",
+        "category",
+        "quantity",
+        "unit_price",
+    }
+    source_field_names = {field.name for field in source_schema_fields}
+    missing_source_fields = required_source_fields - source_field_names
+    if missing_source_fields:
+        raise AssertionError(
+            "Direct Delta source schema is missing fields: "
+            + ", ".join(sorted(missing_source_fields))
+        )
+
+    source_view = "resolved_delta_events_source"
+    source.createOrReplaceTempView(source_view)
+    log(
+        f"Registered direct-path Delta DataFrame as temporary view "
+        f"{source_view}; running spark.sql transformation"
     )
     transformed = spark.sql(
         f"""
@@ -356,7 +389,7 @@ def transform_batch_with_sql(
                 WHEN quantity >= 6 THEN 'bulk'
                 ELSE 'standard'
             END AS quantity_band
-        FROM {EVENTS_TABLE}
+        FROM {source_view}
         WHERE batch_id = '{batch_id}'
         """
     )
@@ -431,10 +464,13 @@ def aggregate_and_write_summary(
             f"Expected {ROW_COUNT} rows for {batch_id}, found {actual_count}"
         )
 
-    log("Reading the saved summary back through Glue + Delta")
-    log_catalog_io_location(spark, "READ", SUMMARY_TABLE)
+    summary_location = get_catalog_resolved_location(spark, SUMMARY_TABLE)
+    log(
+        f"Reading saved summary directly from Glue-resolved S3 location: "
+        f"{summary_location}"
+    )
     saved_summary = (
-        spark.table(SUMMARY_TABLE)
+        spark.read.format("delta").load(summary_location)
         .filter(F.col("batch_id") == batch_id)
         .orderBy(F.desc("revenue"))
     )
