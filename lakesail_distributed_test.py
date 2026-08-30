@@ -33,11 +33,11 @@ GLUE_CATALOG = os.getenv("GLUE_CATALOG", "glue")
 GLUE_DATABASE = os.getenv("GLUE_DATABASE", "lakesail_poc")
 
 # These are new tables and paths, separate from basic_test.py's sales table.
-EVENTS_TABLE = f"{GLUE_DATABASE}.distributed_sales_events"
-SUMMARY_TABLE = f"{GLUE_DATABASE}.distributed_category_summary"
-EVENTS_PATH = f"s3://{S3_BUCKET}/lakesail-poc/tables/distributed_sales_events"
+EVENTS_TABLE = f"{GLUE_DATABASE}.distributed_sales_eventsv2"
+SUMMARY_TABLE = f"{GLUE_DATABASE}.distributed_category_summaryv2"
+EVENTS_PATH = f"s3://{S3_BUCKET}/lakesail-poc/tables/distributed_sales_eventsv2"
 SUMMARY_PATH = (
-    f"s3://{S3_BUCKET}/lakesail-poc/tables/distributed_category_summary"
+    f"s3://{S3_BUCKET}/lakesail-poc/tables/distributed_category_summaryv2"
 )
 
 ROW_COUNT = int(os.getenv("POC_ROW_COUNT", "100000"))
@@ -331,21 +331,79 @@ def generate_distributed_batch(spark: SparkSession) -> str:
     return batch_id
 
 
+def transform_batch_with_sql(
+    spark: SparkSession,
+    batch_id: str,
+):
+    """Return a SQL-transformed DataFrame and validate its Python schema."""
+
+    log_catalog_io_location(spark, "READ", EVENTS_TABLE)
+    log(
+        f"Running spark.sql transformation against catalog table "
+        f"{EVENTS_TABLE}"
+    )
+    transformed = spark.sql(
+        f"""
+        SELECT
+            batch_id,
+            event_id,
+            category,
+            quantity,
+            unit_price,
+            CAST(CAST(quantity AS DOUBLE) * unit_price AS DOUBLE)
+                AS line_total,
+            CASE
+                WHEN quantity >= 6 THEN 'bulk'
+                ELSE 'standard'
+            END AS quantity_band
+        FROM {EVENTS_TABLE}
+        WHERE batch_id = '{batch_id}'
+        """
+    )
+
+    # Spark Connect sends the analyzed StructType back to this Python client.
+    # Accessing .fields proves the schema is available as native Python objects.
+    schema_fields = transformed.schema.fields
+    field_types = {
+        field.name: field.dataType.simpleString() for field in schema_fields
+    }
+    log(
+        "Python reached transformed.schema.fields: "
+        + ", ".join(
+            f"{field.name}:{field.dataType.simpleString()}"
+            for field in schema_fields
+        )
+    )
+
+    expected_fields = {
+        "line_total": "double",
+        "quantity_band": "string",
+    }
+    for field_name, expected_type in expected_fields.items():
+        actual_type = field_types.get(field_name)
+        if actual_type != expected_type:
+            raise AssertionError(
+                f"Expected SQL-derived field {field_name}:{expected_type}, "
+                f"found {actual_type!r}"
+            )
+
+    log(
+        "SQL transformation schema verification passed: "
+        "line_total:double, quantity_band:string"
+    )
+    return transformed
+
+
 def aggregate_and_write_summary(
     spark: SparkSession,
     batch_id: str,
 ) -> None:
     """Run distributed filtering, projection, shuffle aggregation and write."""
 
-    log_catalog_io_location(spark, "READ", EVENTS_TABLE)
-    batch = spark.table(EVENTS_TABLE).filter(F.col("batch_id") == batch_id)
-    enriched = batch.withColumn(
-        "line_total",
-        F.col("quantity") * F.col("unit_price"),
-    )
+    transformed = transform_batch_with_sql(spark, batch_id)
 
     summary = (
-        enriched.repartition(PARTITION_COUNT, "category")
+        transformed.repartition(PARTITION_COUNT, "category")
         .groupBy("batch_id", "category")
         .agg(
             F.count("*").alias("event_count"),
@@ -367,7 +425,7 @@ def aggregate_and_write_summary(
     summary.write.mode("append").saveAsTable(SUMMARY_TABLE)
 
     log("Counting the generated input batch for verification")
-    actual_count = batch.count()
+    actual_count = transformed.count()
     if actual_count != ROW_COUNT:
         raise AssertionError(
             f"Expected {ROW_COUNT} rows for {batch_id}, found {actual_count}"

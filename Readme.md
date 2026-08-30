@@ -7,9 +7,9 @@ A new user only needs to do three things:
 2. Set up AWS credentials and an S3 bucket.
 3. Run the POC.
 
-## 1. Minikube, Docker, and Argo
+## 1. Local Cluster Setup
 
-The cluster bootstrap script is [lakesail_poc_cluster.sh](/home/zeo/Desktop/lakesail/lakesail_poc_cluster.sh).
+The local cluster setup script is [lakesail_local_cluster_setup.sh](/home/zeo/Desktop/lakesail/lakesail_local_cluster_setup.sh). It installs `minikube`, `kubectl`, and the Argo CLI when needed, creates the local Minikube cluster, and installs Argo Workflows.
 
 What you need first:
 
@@ -20,7 +20,7 @@ What you need first:
 Run:
 
 ```bash
-./lakesail_poc_cluster.sh setup
+./lakesail_local_cluster_setup.sh setup
 ```
 
 What this does:
@@ -32,7 +32,7 @@ What this does:
 Useful checks:
 
 ```bash
-./lakesail_poc_cluster.sh status
+./lakesail_local_cluster_setup.sh status
 docker info
 minikube status --profile lakesail-poc
 kubectl get pods -n argo
